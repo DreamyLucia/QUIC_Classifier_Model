@@ -4,11 +4,12 @@
 """
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import joblib
-from typing import Dict, Any, Optional, List
 import os
-import sys
+from typing import Dict, Any, Optional, List
 
 
 # 导入模型定义
@@ -186,4 +187,168 @@ class ModelEngine:
 
     def predict_batch(self, features_list: List[np.ndarray]) -> List[Dict[str, Any]]:
         """批量预测"""
+        return [self.predict(feats) for feats in features_list]
+
+
+class CrossGranularityInteraction(nn.Module):
+    """跨粒度交互模块"""
+
+    def __init__(self, feat_dim=64):
+        super().__init__()
+        self.interaction = nn.Linear(feat_dim * 2, feat_dim)
+        self.relu = nn.ReLU()
+
+    def forward(self, f_t, f_p):
+        concat = torch.cat([f_t, f_p], dim=-1)
+        f_inter = self.interaction(concat)
+        f_inter = self.relu(f_inter)
+        return f_inter
+
+
+class AttentionFusion(nn.Module):
+    """注意力融合层"""
+
+    def __init__(self, feat_dim=64):
+        super().__init__()
+        self.attention = nn.Sequential(
+            nn.Linear(feat_dim * 2, 32),
+            nn.Tanh(),
+            nn.Linear(32, 2),
+            nn.Softmax(dim=-1)
+        )
+
+    def forward(self, f_t, f_p):
+        concat = torch.cat([f_t, f_p], dim=-1)
+        alpha = self.attention(concat)
+        f_fused = alpha[:, 0:1] * f_t + alpha[:, 1:2] * f_p
+        return f_fused, alpha
+
+
+class ADFNet(nn.Module):
+    """注意力增强的双流多粒度融合网络"""
+
+    def __init__(self, num_classes=8, feat_dim=64):
+        super().__init__()
+
+        # 时间特征提取器
+        self.temporal_conv = nn.Sequential(
+            nn.Conv1d(1, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.temporal_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 字节特征提取器
+        self.payload_conv = nn.Sequential(
+            nn.Conv1d(1, 8, 3),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(8, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(2),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.payload_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 跨粒度交互模块
+        self.cross_interaction = CrossGranularityInteraction(feat_dim)
+
+        # 注意力融合层
+        self.attention_fusion = AttentionFusion(feat_dim)
+
+        # 分类器
+        self.classifier = nn.Sequential(
+            nn.Linear(feat_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, num_classes)
+        )
+
+    def forward(self, temporal, payload, stats):
+        """
+        Args:
+            temporal: 时间特征 [batch, 120]
+            payload: 字节特征 [batch, 900]
+            stats: 统计特征 [batch, 4]
+        Returns:
+            output: 分类结果 [batch, num_classes]
+            alpha: 注意力权重
+        """
+        # 1. 时间特征提取
+        t = temporal.unsqueeze(1)
+        t = self.temporal_conv(t)
+        t = torch.mean(t, dim=2)
+        t = torch.cat([t, stats], dim=1)
+        f_t = self.temporal_fc(t)
+
+        # 2. 字节特征提取
+        p = payload.unsqueeze(1)
+        p = self.payload_conv(p)
+        p = torch.mean(p, dim=2)
+        p = torch.cat([p, stats], dim=1)
+        f_p = self.payload_fc(p)
+
+        # 3. 跨粒度交互
+        f_inter = self.cross_interaction(f_t, f_p)
+
+        # 4. 注意力融合
+        f_fused, alpha = self.attention_fusion(f_inter, f_p)
+
+        # 5. 分类
+        output = self.classifier(f_fused)
+
+        return output, alpha
+
+
+class ADFNetModelEngine:
+    """ADF-Net 模型引擎"""
+
+    def __init__(self, model_path: str, device: str = 'cpu'):
+        self.device = torch.device(device)
+        self.num_classes = 8
+        self.class_names = ['Nkiri', 'bilibili', 'edge', 'kwai',
+                            'tencentnews', 'tencentvideo', 'tiktok', 'xiaohongshu']
+
+        self.time_features_dim = 120
+        self.byte_features_dim = 900
+        self.stat_features_dim = 4
+
+        self.model = ADFNet(num_classes=self.num_classes).to(self.device)
+
+        if os.path.exists(model_path):
+            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+            self.model.eval()
+            print(f"✅ ADF-Net 模型加载成功: {model_path}")
+        else:
+            print(f"⚠️ 模型文件不存在: {model_path}")
+
+    def predict(self, features: np.ndarray) -> Dict[str, Any]:
+        """预测单个样本"""
+        time_feat = features[:self.time_features_dim].reshape(1, -1)
+        byte_feat = features[self.time_features_dim:self.time_features_dim + self.byte_features_dim].reshape(1, -1)
+        stats_feat = features[-self.stat_features_dim:].reshape(1, -1)
+
+        time_tensor = torch.FloatTensor(time_feat).to(self.device)
+        byte_tensor = torch.FloatTensor(byte_feat).to(self.device)
+        stats_tensor = torch.FloatTensor(stats_feat).to(self.device)
+
+        with torch.no_grad():
+            outputs, alpha = self.model(time_tensor, byte_tensor, stats_tensor)
+            probs = torch.softmax(outputs, dim=1)
+
+        pred_id = torch.argmax(probs, dim=1).item()
+        confidence = probs[0, pred_id].item()
+
+        return {
+            'label': self.class_names[pred_id],
+            'label_id': pred_id,
+            'confidence': confidence,
+            'probabilities': probs[0].cpu().numpy().tolist(),
+            'attention_weights': alpha[0].cpu().numpy().tolist()
+        }
+
+    def predict_batch(self, features_list: List[np.ndarray]) -> List[Dict[str, Any]]:
         return [self.predict(feats) for feats in features_list]

@@ -16,11 +16,17 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.preprocessing import LabelEncoder
 import multiprocessing
+import sys
+
+# 添加项目根目录到路径
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 
 # -------------------- 配置参数 --------------------
 class Config:
-    DATA_ROOT = "./data"  # 数据目录，包含按类别分类的子文件夹
+    TRAIN_DATA_ROOT = "./data/train"   # 训练集目录
+    VAL_DATA_ROOT = "./data/val"       # 验证集目录
+    TEST_DATA_ROOT = "./data/test"     # 测试集目录
     MAX_PACKETS = 60
     TIME_FEATURES = 120
     BYTE_FEATURES = 900
@@ -148,7 +154,7 @@ def process_pcap_wrapper(pcap_path, label):
 
 
 def load_dataset(root_dir):
-    """加载数据集，支持多进程并行处理"""
+    """加载指定目录的数据集，返回特征、标签和标签编码器"""
     features = []
     labels = []
 
@@ -310,47 +316,28 @@ def train_model(model, x_data, stats, labels, num_classes):
     return model
 
 
-def print_confusion_matrix(y_true, y_pred, le):
-    """打印分类评估报告"""
-    classes = le.classes_
-    labels = le.transform(classes)
-
-    print("\n" + "=" * 50)
-    print("Classification Report:")
-    print(classification_report(
-        y_true,
-        y_pred,
-        labels=labels,
-        target_names=classes,
-        digits=4,
-        zero_division=0
-    ))
-
-    print("\nConfusion Matrix:")
-    cm = confusion_matrix(y_true, y_pred, labels=labels)
-    cm_df = pd.DataFrame(cm, index=classes, columns=classes)
-    print(cm_df)
-    print("=" * 50 + "\n")
-
-
 def main():
-    # 加载数据
-    X, y, label_encoder = load_dataset(Config.DATA_ROOT)
-    print(f"\n数据集加载完成，总样本: {len(X)}，类别数: {len(label_encoder.classes_)}")
+    """主训练函数 - 使用训练集和验证集"""
+    # 加载训练集
+    print("=" * 50)
+    print("加载训练集...")
+    X_train, y_train, label_encoder = load_dataset(Config.TRAIN_DATA_ROOT)
+    print(f"训练集加载完成，总样本: {len(X_train)}，类别数: {len(label_encoder.classes_)}")
 
-    # 数据分割
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=42
-    )
+    # 加载验证集
+    print("\n加载验证集...")
+    X_val, y_val, _ = load_dataset(Config.VAL_DATA_ROOT)
+    print(f"验证集加载完成，总样本: {len(X_val)}")
 
-    # 特征分解
+    # 特征分解 - 训练集
     time_train = X_train[:, :Config.TIME_FEATURES]
     byte_train = X_train[:, Config.TIME_FEATURES:-Config.STAT_FEATURES]
     stats_train = X_train[:, -Config.STAT_FEATURES:]
 
-    time_test = X_test[:, :Config.TIME_FEATURES]
-    byte_test = X_test[:, Config.TIME_FEATURES:-Config.STAT_FEATURES]
-    stats_test = X_test[:, -Config.STAT_FEATURES:]
+    # 特征分解 - 验证集
+    time_val = X_val[:, :Config.TIME_FEATURES]
+    byte_val = X_val[:, Config.TIME_FEATURES:-Config.STAT_FEATURES]
+    stats_val = X_val[:, -Config.STAT_FEATURES:]
 
     # 训练时序模型
     print("\n训练时序模型中...")
@@ -382,17 +369,20 @@ def main():
     import joblib
     joblib.dump(nb_clf, "./weights/nb_classifier.pkl")
 
-    # 在测试集上评估
-    time_test_probs = get_probs(time_model, time_test, stats_test)
-    byte_test_probs = get_probs(byte_model, byte_test, stats_test)
-    X_ensemble_test = np.concatenate([time_test_probs, byte_test_probs], axis=1)
-    final_preds = nb_clf.predict(X_ensemble_test)
-
-    # 评估结果
-    print_confusion_matrix(y_test, final_preds, label_encoder)
+    # 在验证集上评估
+    print("\n在验证集上评估...")
+    time_val_probs = get_probs(time_model, time_val, stats_val)
+    byte_val_probs = get_probs(byte_model, byte_val, stats_val)
+    X_ensemble_val = np.concatenate([time_val_probs, byte_val_probs], axis=1)
+    final_preds = nb_clf.predict(X_ensemble_val)
 
     print("\n类别映射参考:")
     print({i: name for i, name in enumerate(label_encoder.classes_)})
+
+
+def load_test_data():
+    """单独加载测试集（用于评估脚本）"""
+    return load_dataset(Config.TEST_DATA_ROOT)
 
 
 if __name__ == "__main__":
