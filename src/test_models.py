@@ -1,77 +1,97 @@
 import os
 import sys
 
-# 切换到项目根目录
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 sys.path.append(os.getcwd())
 
 import numpy as np
-from src.model_engine import ADFNetModelEngine, ModelEngine
+import torch
+from src.model_engine import (
+    ModelEngine,  # 基线双流CNN
+    ADFNet,  # 完整ADF-Net
+    ADFNet_AttentionOnly,  # 仅注意力融合
+    ADFNet_InteractionOnly  # 仅跨粒度交互
+)
 from training.mix_ import load_dataset, Config
 from src.evaluation import print_confusion_matrix, save_evaluation_results
 
 
-def evaluate_adfnet(model_path: str = "weights/ADFNet_best.pth"):
-    """评估 ADF-Net 模型在测试集上的表现"""
+class AblationModelEngine:
+    """消融模型引擎（用于测试集评估）"""
 
-    print("=" * 60)
-    print("评估 ADF-Net 模型（测试集）")
-    print("=" * 60)
+    def __init__(self, model_path: str, model_type: str, device: str = 'cpu'):
+        self.device = torch.device(device)
+        self.num_classes = 8
+        self.class_names = ['Nkiri', 'bilibili', 'edge', 'kwai',
+                            'tencentnews', 'tencentvideo', 'tiktok', 'xiaohongshu']
 
-    # 1. 加载测试集
-    print("\n[1/4] 加载测试集...")
-    X_test, y_test, label_encoder = load_dataset(Config.TEST_DATA_ROOT)
-    print(f"测试集加载完成: {X_test.shape}, 类别数: {len(label_encoder.classes_)}")
+        self.time_features_dim = 120
+        self.byte_features_dim = 900
+        self.stat_features_dim = 4
 
-    # 2. 加载模型
-    print("\n[2/4] 加载模型...")
-    engine = ADFNetModelEngine(model_path=model_path)
+        # 根据模型类型选择对应的类
+        if model_type == 'attention_only':
+            self.model = ADFNet_AttentionOnly(num_classes=self.num_classes).to(self.device)
+        elif model_type == 'interaction_only':
+            self.model = ADFNet_InteractionOnly(num_classes=self.num_classes).to(self.device)
+        elif model_type == 'full':
+            self.model = ADFNet(num_classes=self.num_classes).to(self.device)
+        else:
+            raise ValueError(f"未知模型类型: {model_type}")
 
-    # 3. 预测
-    print("\n[3/4] 进行预测...")
-    all_preds = []
-    for i in range(len(X_test)):
-        result = engine.predict(X_test[i])
-        all_preds.append(result['label_id'])
+        if os.path.exists(model_path):
+            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+            self.model.eval()
+            print(f"✅ 模型加载成功: {model_path}")
+        else:
+            print(f"⚠️ 模型文件不存在: {model_path}")
 
-    # 4. 评估
-    print("\n[4/4] 评估结果...")
-    print_confusion_matrix(np.array(all_preds), y_test, label_encoder)
-    save_evaluation_results(np.array(all_preds), y_test, label_encoder, model_name="ADFNet_test")
+    def predict(self, features: np.ndarray) -> dict:
+        """预测单个样本"""
+        time_feat = features[:self.time_features_dim].reshape(1, -1)
+        byte_feat = features[self.time_features_dim:self.time_features_dim + self.byte_features_dim].reshape(1, -1)
+        stats_feat = features[-self.stat_features_dim:].reshape(1, -1)
 
-    accuracy = np.sum(np.array(all_preds) == y_test) / len(y_test)
-    print(f"\n测试集准确率: {accuracy:.4f}")
+        time_tensor = torch.FloatTensor(time_feat).to(self.device)
+        byte_tensor = torch.FloatTensor(byte_feat).to(self.device)
+        stats_tensor = torch.FloatTensor(stats_feat).to(self.device)
+
+        with torch.no_grad():
+            outputs, _ = self.model(time_tensor, byte_tensor, stats_tensor)
+            probs = torch.softmax(outputs, dim=1)
+
+        pred_id = torch.argmax(probs, dim=1).item()
+        confidence = probs[0, pred_id].item()
+
+        return {
+            'label': self.class_names[pred_id],
+            'label_id': pred_id,
+            'confidence': confidence,
+            'probabilities': probs[0].cpu().numpy().tolist()
+        }
 
 
 def evaluate_standard_model():
-    """评估标准双流CNN模型在测试集上的表现"""
-
+    """评估基线双流CNN模型"""
     print("=" * 60)
-    print("评估标准双流CNN模型（测试集）")
+    print("评估基线双流CNN模型（测试集）")
     print("=" * 60)
 
-    # 1. 加载测试集
-    print("\n[1/4] 加载测试集...")
     X_test, y_test, label_encoder = load_dataset(Config.TEST_DATA_ROOT)
-    print(f"测试集加载完成: {X_test.shape}, 类别数: {len(label_encoder.classes_)}")
+    print(f"测试集加载完成: {X_test.shape}")
 
-    # 2. 加载模型
-    print("\n[2/4] 加载模型...")
     engine = ModelEngine(
         time_model_path="weights/TemporalCNN_best.pth",
         byte_model_path="weights/PayloadCNN_best.pth",
         nb_clf_path="weights/nb_classifier.pkl"
     )
 
-    # 3. 预测
-    print("\n[3/4] 进行预测...")
+    print("预测中...")
     all_preds = []
     for i in range(len(X_test)):
         result = engine.predict(X_test[i])
         all_preds.append(result['label_id'])
 
-    # 4. 评估
-    print("\n[4/4] 评估结果...")
     print_confusion_matrix(np.array(all_preds), y_test, label_encoder)
     save_evaluation_results(np.array(all_preds), y_test, label_encoder, model_name="StandardModel_test")
 
@@ -79,74 +99,126 @@ def evaluate_standard_model():
     print(f"\n测试集准确率: {accuracy:.4f}")
 
 
-def compare_models():
-    """对比两个模型在测试集上的表现"""
-
+def evaluate_ablation_model(model_path: str, model_type: str, model_name: str):
+    """评估消融模型"""
     print("=" * 60)
-    print("模型对比（测试集）")
+    print(f"评估 {model_name}（测试集）")
     print("=" * 60)
 
-    # 加载测试集
     X_test, y_test, label_encoder = load_dataset(Config.TEST_DATA_ROOT)
-    print(f"测试集加载完成: {X_test.shape}, 类别数: {len(label_encoder.classes_)}")
+    print(f"测试集加载完成: {X_test.shape}")
 
-    # 标准模型预测
-    print("\n标准模型预测中...")
-    standard_engine = ModelEngine(
+    engine = AblationModelEngine(model_path=model_path, model_type=model_type)
+
+    print("预测中...")
+    all_preds = []
+    for i in range(len(X_test)):
+        result = engine.predict(X_test[i])
+        all_preds.append(result['label_id'])
+
+    print_confusion_matrix(np.array(all_preds), y_test, label_encoder)
+    save_evaluation_results(np.array(all_preds), y_test, label_encoder, model_name=model_name)
+
+    accuracy = np.sum(np.array(all_preds) == y_test) / len(y_test)
+    print(f"\n测试集准确率: {accuracy:.4f}")
+
+
+def evaluate_full_adfnet():
+    """评估完整ADF-Net"""
+    evaluate_ablation_model("weights/ADFNet_best.pth", "full", "ADFNet_Full_test")
+
+
+def evaluate_attention_only():
+    """评估仅注意力融合模型"""
+    evaluate_ablation_model("weights/ADFNet_AttentionOnly_best.pth", "attention_only", "ADFNet_AttentionOnly_test")
+
+
+def evaluate_interaction_only():
+    """评估仅跨粒度交互模型"""
+    evaluate_ablation_model("weights/ADFNet_InteractionOnly_best.pth", "interaction_only",
+                            "ADFNet_InteractionOnly_test")
+
+
+def compare_all_models():
+    """对比所有模型在测试集上的表现"""
+    print("=" * 60)
+    print("所有模型对比（测试集）")
+    print("=" * 60)
+
+    X_test, y_test, label_encoder = load_dataset(Config.TEST_DATA_ROOT)
+    print(f"测试集加载完成: {X_test.shape}")
+
+    results = {}
+
+    # 1. 基线模型
+    print("\n[1/4] 基线双流CNN预测中...")
+    baseline_engine = ModelEngine(
         time_model_path="weights/TemporalCNN_best.pth",
         byte_model_path="weights/PayloadCNN_best.pth",
         nb_clf_path="weights/nb_classifier.pkl"
     )
-    standard_preds = []
+    baseline_preds = []
     for i in range(len(X_test)):
-        result = standard_engine.predict(X_test[i])
-        standard_preds.append(result['label_id'])
+        result = baseline_engine.predict(X_test[i])
+        baseline_preds.append(result['label_id'])
+    baseline_acc = np.sum(np.array(baseline_preds) == y_test) / len(y_test)
+    results['基线双流CNN'] = baseline_acc
 
-    # ADF-Net 预测
-    print("ADF-Net 预测中...")
-    adfnet_engine = ADFNetModelEngine(model_path="weights/ADFNet_best.pth")
-    adfnet_preds = []
+    # 2. 仅注意力融合
+    print("\n[2/4] 仅注意力融合预测中...")
+    attention_engine = AblationModelEngine("weights/ADFNet_AttentionOnly_best.pth", "attention_only")
+    attention_preds = []
     for i in range(len(X_test)):
-        result = adfnet_engine.predict(X_test[i])
-        adfnet_preds.append(result['label_id'])
+        result = attention_engine.predict(X_test[i])
+        attention_preds.append(result['label_id'])
+    attention_acc = np.sum(np.array(attention_preds) == y_test) / len(y_test)
+    results['仅注意力融合'] = attention_acc
 
-    # 打印标准模型的详细报告
-    print("\n" + "=" * 60)
-    print("标准双流CNN 详细评估结果")
-    print("=" * 60)
-    print_confusion_matrix(np.array(standard_preds), y_test, label_encoder)
-    save_evaluation_results(np.array(standard_preds), y_test, label_encoder, model_name="StandardModel_test")
+    # 3. 仅跨粒度交互
+    print("\n[3/4] 仅跨粒度交互预测中...")
+    interaction_engine = AblationModelEngine("weights/ADFNet_InteractionOnly_best.pth", "interaction_only")
+    interaction_preds = []
+    for i in range(len(X_test)):
+        result = interaction_engine.predict(X_test[i])
+        interaction_preds.append(result['label_id'])
+    interaction_acc = np.sum(np.array(interaction_preds) == y_test) / len(y_test)
+    results['仅跨粒度交互'] = interaction_acc
 
-    # 打印 ADF-Net 的详细报告
-    print("\n" + "=" * 60)
-    print("ADF-Net 详细评估结果")
-    print("=" * 60)
-    print_confusion_matrix(np.array(adfnet_preds), y_test, label_encoder)
-    save_evaluation_results(np.array(adfnet_preds), y_test, label_encoder, model_name="ADFNet_test")
+    # 4. 完整ADF-Net
+    print("\n[4/4] 完整ADF-Net预测中...")
+    full_engine = AblationModelEngine("weights/ADFNet_best.pth", "full")
+    full_preds = []
+    for i in range(len(X_test)):
+        result = full_engine.predict(X_test[i])
+        full_preds.append(result['label_id'])
+    full_acc = np.sum(np.array(full_preds) == y_test) / len(y_test)
+    results['完整ADF-Net'] = full_acc
 
-    # 计算准确率
-    standard_acc = np.sum(np.array(standard_preds) == y_test) / len(y_test)
-    adfnet_acc = np.sum(np.array(adfnet_preds) == y_test) / len(y_test)
-
+    # 打印对比结果
     print("\n" + "=" * 60)
     print("对比结果")
     print("=" * 60)
-    print(f"标准双流CNN 准确率: {standard_acc:.4f}")
-    print(f"ADF-Net 准确率:     {adfnet_acc:.4f}")
-    print(f"提升:                {(adfnet_acc - standard_acc) * 100:+.2f}%")
+    for name, acc in results.items():
+        print(f"{name:20} 准确率: {acc:.4f}")
+
+    print(f"\n完整ADF-Net vs 基线: {(results['完整ADF-Net'] - results['基线双流CNN']) * 100:+.2f}%")
 
 
 if __name__ == "__main__":
     import sys
 
     if len(sys.argv) > 1:
-        if sys.argv[1] == "adfnet":
-            evaluate_adfnet()
-        elif sys.argv[1] == "standard":
+        if sys.argv[1] == "standard":
             evaluate_standard_model()
+        elif sys.argv[1] == "full":
+            evaluate_full_adfnet()
+        elif sys.argv[1] == "attention_only":
+            evaluate_attention_only()
+        elif sys.argv[1] == "interaction_only":
+            evaluate_interaction_only()
         elif sys.argv[1] == "compare":
-            compare_models()
+            compare_all_models()
         else:
-            print("用法: python test_models.py [adfnet|standard|compare]")
+            print("用法: python test_models.py [standard|full|attention_only|interaction_only|compare]")
     else:
-        compare_models()
+        compare_all_models()

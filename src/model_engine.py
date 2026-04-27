@@ -352,3 +352,131 @@ class ADFNetModelEngine:
 
     def predict_batch(self, features_list: List[np.ndarray]) -> List[Dict[str, Any]]:
         return [self.predict(feats) for feats in features_list]
+
+class ADFNet_AttentionOnly(nn.Module):
+    """仅注意力融合，无跨粒度交互"""
+    def __init__(self, num_classes=8, feat_dim=64):
+        super().__init__()
+
+        # 时间特征提取器（与ADF-Net相同）
+        self.temporal_conv = nn.Sequential(
+            nn.Conv1d(1, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.temporal_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 字节特征提取器（与ADF-Net相同）
+        self.payload_conv = nn.Sequential(
+            nn.Conv1d(1, 8, 3),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(8, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(2),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.payload_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 注意力融合层
+        self.attention_fusion = AttentionFusion(feat_dim)
+
+        # 分类器
+        self.classifier = nn.Sequential(
+            nn.Linear(feat_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, num_classes)
+        )
+
+    def forward(self, temporal, payload, stats):
+        # 时间特征提取
+        t = temporal.unsqueeze(1)
+        t = self.temporal_conv(t)
+        t = torch.mean(t, dim=2)
+        t = torch.cat([t, stats], dim=1)
+        f_t = self.temporal_fc(t)
+
+        # 字节特征提取
+        p = payload.unsqueeze(1)
+        p = self.payload_conv(p)
+        p = torch.mean(p, dim=2)
+        p = torch.cat([p, stats], dim=1)
+        f_p = self.payload_fc(p)
+
+        # 直接注意力融合（无跨粒度交互）
+        f_fused, alpha = self.attention_fusion(f_t, f_p)
+
+        # 分类
+        output = self.classifier(f_fused)
+
+        return output, alpha
+
+
+class ADFNet_InteractionOnly(nn.Module):
+    """仅跨粒度交互，无注意力融合（使用平均融合）"""
+    def __init__(self, num_classes=8, feat_dim=64):
+        super().__init__()
+
+        # 时间特征提取器
+        self.temporal_conv = nn.Sequential(
+            nn.Conv1d(1, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.temporal_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 字节特征提取器
+        self.payload_conv = nn.Sequential(
+            nn.Conv1d(1, 8, 3),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(8, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(2),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.payload_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 跨粒度交互模块
+        self.cross_interaction = CrossGranularityInteraction(feat_dim)
+
+        # 分类器
+        self.classifier = nn.Sequential(
+            nn.Linear(feat_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, num_classes)
+        )
+
+    def forward(self, temporal, payload, stats):
+        # 时间特征提取
+        t = temporal.unsqueeze(1)
+        t = self.temporal_conv(t)
+        t = torch.mean(t, dim=2)
+        t = torch.cat([t, stats], dim=1)
+        f_t = self.temporal_fc(t)
+
+        # 字节特征提取
+        p = payload.unsqueeze(1)
+        p = self.payload_conv(p)
+        p = torch.mean(p, dim=2)
+        p = torch.cat([p, stats], dim=1)
+        f_p = self.payload_fc(p)
+
+        # 跨粒度交互
+        f_inter = self.cross_interaction(f_t, f_p)
+
+        # 平均融合（替代注意力融合）
+        f_fused = (f_inter + f_p) / 2
+
+        # 分类
+        output = self.classifier(f_fused)
+
+        return output, None
