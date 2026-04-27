@@ -92,8 +92,9 @@ def evaluate_standard_model():
         result = engine.predict(X_test[i])
         all_preds.append(result['label_id'])
 
-    print_confusion_matrix(np.array(all_preds), y_test, label_encoder)
-    save_evaluation_results(np.array(all_preds), y_test, label_encoder, model_name="StandardModel_test")
+    # ✅ 修改顺序：真实标签在前，预测标签在后
+    print_confusion_matrix(y_test, np.array(all_preds), label_encoder)
+    save_evaluation_results(y_test, np.array(all_preds), label_encoder, model_name="StandardModel_test")
 
     accuracy = np.sum(np.array(all_preds) == y_test) / len(y_test)
     print(f"\n测试集准确率: {accuracy:.4f}")
@@ -116,8 +117,9 @@ def evaluate_ablation_model(model_path: str, model_type: str, model_name: str):
         result = engine.predict(X_test[i])
         all_preds.append(result['label_id'])
 
-    print_confusion_matrix(np.array(all_preds), y_test, label_encoder)
-    save_evaluation_results(np.array(all_preds), y_test, label_encoder, model_name=model_name)
+    # ✅ 修改顺序：真实标签在前，预测标签在后
+    print_confusion_matrix(y_test, np.array(all_preds), label_encoder)
+    save_evaluation_results(y_test, np.array(all_preds), label_encoder, model_name=model_name)
 
     accuracy = np.sum(np.array(all_preds) == y_test) / len(y_test)
     print(f"\n测试集准确率: {accuracy:.4f}")
@@ -165,9 +167,9 @@ def compare_all_models():
     baseline_acc = np.sum(baseline_preds == y_test) / len(y_test)
     results['基线双流CNN'] = baseline_acc
 
-    # 保存基线模型评估结果
-    print_confusion_matrix(baseline_preds, y_test, label_encoder)
-    save_evaluation_results(baseline_preds, y_test, label_encoder, model_name="StandardModel_test")
+    # ✅ 修改顺序：真实标签在前，预测标签在后
+    print_confusion_matrix(y_test, baseline_preds, label_encoder)
+    save_evaluation_results(y_test, baseline_preds, label_encoder, model_name="StandardModel_test")
 
     # 2. 仅注意力融合（如果已训练）
     attention_path = "weights/ADFNet_AttentionOnly_best.pth"
@@ -182,9 +184,9 @@ def compare_all_models():
         attention_acc = np.sum(attention_preds == y_test) / len(y_test)
         results['仅注意力融合'] = attention_acc
 
-        # 保存仅注意力融合评估结果
-        print_confusion_matrix(attention_preds, y_test, label_encoder)
-        save_evaluation_results(attention_preds, y_test, label_encoder, model_name="ADFNet_AttentionOnly_test")
+        # ✅ 修改顺序：真实标签在前，预测标签在后
+        print_confusion_matrix(y_test, attention_preds, label_encoder)
+        save_evaluation_results(y_test, attention_preds, label_encoder, model_name="ADFNet_AttentionOnly_test")
     else:
         print("\n[2/4] 仅注意力融合模型不存在，跳过")
         results['仅注意力融合'] = None
@@ -202,9 +204,9 @@ def compare_all_models():
         interaction_acc = np.sum(interaction_preds == y_test) / len(y_test)
         results['仅跨粒度交互'] = interaction_acc
 
-        # 保存仅跨粒度交互评估结果
-        print_confusion_matrix(interaction_preds, y_test, label_encoder)
-        save_evaluation_results(interaction_preds, y_test, label_encoder, model_name="ADFNet_InteractionOnly_test")
+        # ✅ 修改顺序：真实标签在前，预测标签在后
+        print_confusion_matrix(y_test, interaction_preds, label_encoder)
+        save_evaluation_results(y_test, interaction_preds, label_encoder, model_name="ADFNet_InteractionOnly_test")
     else:
         print("\n[3/4] 仅跨粒度交互模型不存在，跳过")
         results['仅跨粒度交互'] = None
@@ -220,9 +222,9 @@ def compare_all_models():
     full_acc = np.sum(full_preds == y_test) / len(y_test)
     results['完整ADF-Net'] = full_acc
 
-    # 保存完整ADF-Net评估结果
-    print_confusion_matrix(full_preds, y_test, label_encoder)
-    save_evaluation_results(full_preds, y_test, label_encoder, model_name="ADFNet_Full_test")
+    # ✅ 修改顺序：真实标签在前，预测标签在后
+    print_confusion_matrix(y_test, full_preds, label_encoder)
+    save_evaluation_results(y_test, full_preds, label_encoder, model_name="ADFNet_Full_test")
 
     # 打印对比结果
     print("\n" + "=" * 60)
