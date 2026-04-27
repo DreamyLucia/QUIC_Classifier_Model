@@ -140,7 +140,7 @@ def evaluate_interaction_only():
 
 
 def compare_all_models():
-    """对比所有模型在测试集上的表现"""
+    """对比所有模型在测试集上的表现，并保存每个模型的评估结果"""
     print("=" * 60)
     print("所有模型对比（测试集）")
     print("=" * 60)
@@ -161,28 +161,53 @@ def compare_all_models():
     for i in range(len(X_test)):
         result = baseline_engine.predict(X_test[i])
         baseline_preds.append(result['label_id'])
-    baseline_acc = np.sum(np.array(baseline_preds) == y_test) / len(y_test)
+    baseline_preds = np.array(baseline_preds)
+    baseline_acc = np.sum(baseline_preds == y_test) / len(y_test)
     results['基线双流CNN'] = baseline_acc
 
-    # 2. 仅注意力融合
-    print("\n[2/4] 仅注意力融合预测中...")
-    attention_engine = AblationModelEngine("weights/ADFNet_AttentionOnly_best.pth", "attention_only")
-    attention_preds = []
-    for i in range(len(X_test)):
-        result = attention_engine.predict(X_test[i])
-        attention_preds.append(result['label_id'])
-    attention_acc = np.sum(np.array(attention_preds) == y_test) / len(y_test)
-    results['仅注意力融合'] = attention_acc
+    # 保存基线模型评估结果
+    print_confusion_matrix(baseline_preds, y_test, label_encoder)
+    save_evaluation_results(baseline_preds, y_test, label_encoder, model_name="StandardModel_test")
 
-    # 3. 仅跨粒度交互
-    print("\n[3/4] 仅跨粒度交互预测中...")
-    interaction_engine = AblationModelEngine("weights/ADFNet_InteractionOnly_best.pth", "interaction_only")
-    interaction_preds = []
-    for i in range(len(X_test)):
-        result = interaction_engine.predict(X_test[i])
-        interaction_preds.append(result['label_id'])
-    interaction_acc = np.sum(np.array(interaction_preds) == y_test) / len(y_test)
-    results['仅跨粒度交互'] = interaction_acc
+    # 2. 仅注意力融合（如果已训练）
+    attention_path = "weights/ADFNet_AttentionOnly_best.pth"
+    if os.path.exists(attention_path):
+        print("\n[2/4] 仅注意力融合预测中...")
+        attention_engine = AblationModelEngine(attention_path, "attention_only")
+        attention_preds = []
+        for i in range(len(X_test)):
+            result = attention_engine.predict(X_test[i])
+            attention_preds.append(result['label_id'])
+        attention_preds = np.array(attention_preds)
+        attention_acc = np.sum(attention_preds == y_test) / len(y_test)
+        results['仅注意力融合'] = attention_acc
+
+        # 保存仅注意力融合评估结果
+        print_confusion_matrix(attention_preds, y_test, label_encoder)
+        save_evaluation_results(attention_preds, y_test, label_encoder, model_name="ADFNet_AttentionOnly_test")
+    else:
+        print("\n[2/4] 仅注意力融合模型不存在，跳过")
+        results['仅注意力融合'] = None
+
+    # 3. 仅跨粒度交互（如果已训练）
+    interaction_path = "weights/ADFNet_InteractionOnly_best.pth"
+    if os.path.exists(interaction_path):
+        print("\n[3/4] 仅跨粒度交互预测中...")
+        interaction_engine = AblationModelEngine(interaction_path, "interaction_only")
+        interaction_preds = []
+        for i in range(len(X_test)):
+            result = interaction_engine.predict(X_test[i])
+            interaction_preds.append(result['label_id'])
+        interaction_preds = np.array(interaction_preds)
+        interaction_acc = np.sum(interaction_preds == y_test) / len(y_test)
+        results['仅跨粒度交互'] = interaction_acc
+
+        # 保存仅跨粒度交互评估结果
+        print_confusion_matrix(interaction_preds, y_test, label_encoder)
+        save_evaluation_results(interaction_preds, y_test, label_encoder, model_name="ADFNet_InteractionOnly_test")
+    else:
+        print("\n[3/4] 仅跨粒度交互模型不存在，跳过")
+        results['仅跨粒度交互'] = None
 
     # 4. 完整ADF-Net
     print("\n[4/4] 完整ADF-Net预测中...")
@@ -191,17 +216,26 @@ def compare_all_models():
     for i in range(len(X_test)):
         result = full_engine.predict(X_test[i])
         full_preds.append(result['label_id'])
-    full_acc = np.sum(np.array(full_preds) == y_test) / len(y_test)
+    full_preds = np.array(full_preds)
+    full_acc = np.sum(full_preds == y_test) / len(y_test)
     results['完整ADF-Net'] = full_acc
+
+    # 保存完整ADF-Net评估结果
+    print_confusion_matrix(full_preds, y_test, label_encoder)
+    save_evaluation_results(full_preds, y_test, label_encoder, model_name="ADFNet_Full_test")
 
     # 打印对比结果
     print("\n" + "=" * 60)
     print("对比结果")
     print("=" * 60)
     for name, acc in results.items():
-        print(f"{name:20} 准确率: {acc:.4f}")
+        if acc is not None:
+            print(f"{name:20} 准确率: {acc:.4f}")
 
-    print(f"\n完整ADF-Net vs 基线: {(results['完整ADF-Net'] - results['基线双流CNN']) * 100:+.2f}%")
+    if results['完整ADF-Net'] is not None and results['基线双流CNN'] is not None:
+        print(f"\n完整ADF-Net vs 基线: {(results['完整ADF-Net'] - results['基线双流CNN']) * 100:+.2f}%")
+
+    print("\n✅ 所有模型的评估结果已保存至 results/ 目录")
 
 
 if __name__ == "__main__":
