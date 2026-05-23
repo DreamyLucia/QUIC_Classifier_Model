@@ -480,3 +480,152 @@ class ADFNet_InteractionOnly(nn.Module):
         output = self.classifier(f_fused)
 
         return output, None
+
+class DualStream_Concat(nn.Module):
+    """
+    双流CNN-A：特征层拼接
+    将时间特征和字节特征提取后直接拼接，再输入分类器
+    对应论文中的"双流CNN（特征层拼接）"
+    """
+    def __init__(self, num_classes=8, feat_dim=64):
+        super().__init__()
+
+        # 时间特征提取器
+        self.temporal_conv = nn.Sequential(
+            nn.Conv1d(1, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.temporal_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 字节特征提取器
+        self.payload_conv = nn.Sequential(
+            nn.Conv1d(1, 8, 3),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(8, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(2),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.payload_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 分类器：输入128维（64+64），输出类别数
+        self.classifier = nn.Sequential(
+            nn.Linear(feat_dim + feat_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, num_classes)
+        )
+
+    def forward(self, temporal, payload, stats):
+        """
+        Args:
+            temporal: 时间特征 [batch, 120]
+            payload: 字节特征 [batch, 900]
+            stats: 统计特征 [batch, 4]
+        Returns:
+            output: 分类结果 [batch, num_classes]
+            None: 占位符，保持与ADFNet接口一致
+        """
+        # 1. 时间特征提取
+        t = temporal.unsqueeze(1)
+        t = self.temporal_conv(t)
+        t = torch.mean(t, dim=2)
+        t = torch.cat([t, stats], dim=1)
+        f_t = self.temporal_fc(t)
+
+        # 2. 字节特征提取
+        p = payload.unsqueeze(1)
+        p = self.payload_conv(p)
+        p = torch.mean(p, dim=2)
+        p = torch.cat([p, stats], dim=1)
+        f_p = self.payload_fc(p)
+
+        # 3. 特征层拼接
+        concat_feat = torch.cat([f_t, f_p], dim=1)
+
+        # 4. 分类
+        output = self.classifier(concat_feat)
+
+        return output, None
+
+
+class DualStream_Weighted(nn.Module):
+    """
+    双流CNN-B：加权融合
+    引入可学习权重参数，对时间特征和字节特征进行加权求和
+    对应论文中的"双流CNN（加权融合）"
+    """
+    def __init__(self, num_classes=8, feat_dim=64):
+        super().__init__()
+
+        # 时间特征提取器
+        self.temporal_conv = nn.Sequential(
+            nn.Conv1d(1, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.temporal_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 字节特征提取器
+        self.payload_conv = nn.Sequential(
+            nn.Conv1d(1, 8, 3),
+            nn.ReLU(),
+            nn.AvgPool1d(3),
+            nn.Conv1d(8, 16, 5),
+            nn.ReLU(),
+            nn.AvgPool1d(2),
+            nn.Conv1d(16, 32, 5),
+            nn.ReLU()
+        )
+        self.payload_fc = nn.Linear(32 + 4, feat_dim)
+
+        # 可学习权重参数（初始值为0.5，经过sigmoid后范围[0,1]）
+        self.alpha = nn.Parameter(torch.tensor(0.5))
+
+        # 分类器：输入64维融合特征，输出类别数
+        self.classifier = nn.Sequential(
+            nn.Linear(feat_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, num_classes)
+        )
+
+    def forward(self, temporal, payload, stats):
+        """
+        Args:
+            temporal: 时间特征 [batch, 120]
+            payload: 字节特征 [batch, 900]
+            stats: 统计特征 [batch, 4]
+        Returns:
+            output: 分类结果 [batch, num_classes]
+            None: 占位符
+        """
+        # 1. 时间特征提取
+        t = temporal.unsqueeze(1)
+        t = self.temporal_conv(t)
+        t = torch.mean(t, dim=2)
+        t = torch.cat([t, stats], dim=1)
+        f_t = self.temporal_fc(t)
+
+        # 2. 字节特征提取
+        p = payload.unsqueeze(1)
+        p = self.payload_conv(p)
+        p = torch.mean(p, dim=2)
+        p = torch.cat([p, stats], dim=1)
+        f_p = self.payload_fc(p)
+
+        # 3. 加权融合（使用sigmoid确保权重在[0,1]范围内）
+        alpha_weight = torch.sigmoid(self.alpha)
+        fused_feat = alpha_weight * f_t + (1 - alpha_weight) * f_p
+
+        # 4. 分类
+        output = self.classifier(fused_feat)
+
+        return output, None

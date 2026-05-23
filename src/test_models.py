@@ -153,7 +153,7 @@ def compare_all_models():
     results = {}
 
     # 1. 基线模型
-    print("\n[1/4] 基线双流CNN预测中...")
+    print("\n[1/6] 基线双流CNN预测中...")
     baseline_engine = ModelEngine(
         time_model_path="weights/TemporalCNN_best.pth",
         byte_model_path="weights/PayloadCNN_best.pth",
@@ -174,7 +174,7 @@ def compare_all_models():
     # 2. 仅注意力融合（如果已训练）
     attention_path = "weights/ADFNet_AttentionOnly_best.pth"
     if os.path.exists(attention_path):
-        print("\n[2/4] 仅注意力融合预测中...")
+        print("\n[2/6] 仅注意力融合预测中...")
         attention_engine = AblationModelEngine(attention_path, "attention_only")
         attention_preds = []
         for i in range(len(X_test)):
@@ -188,13 +188,13 @@ def compare_all_models():
         print_confusion_matrix(y_test, attention_preds, label_encoder)
         save_evaluation_results(y_test, attention_preds, label_encoder, model_name="ADFNet_AttentionOnly_test")
     else:
-        print("\n[2/4] 仅注意力融合模型不存在，跳过")
+        print("\n[2/6] 仅注意力融合模型不存在，跳过")
         results['仅注意力融合'] = None
 
     # 3. 仅跨粒度交互（如果已训练）
     interaction_path = "weights/ADFNet_InteractionOnly_best.pth"
     if os.path.exists(interaction_path):
-        print("\n[3/4] 仅跨粒度交互预测中...")
+        print("\n[3/6] 仅跨粒度交互预测中...")
         interaction_engine = AblationModelEngine(interaction_path, "interaction_only")
         interaction_preds = []
         for i in range(len(X_test)):
@@ -208,11 +208,11 @@ def compare_all_models():
         print_confusion_matrix(y_test, interaction_preds, label_encoder)
         save_evaluation_results(y_test, interaction_preds, label_encoder, model_name="ADFNet_InteractionOnly_test")
     else:
-        print("\n[3/4] 仅跨粒度交互模型不存在，跳过")
+        print("\n[3/6] 仅跨粒度交互模型不存在，跳过")
         results['仅跨粒度交互'] = None
 
     # 4. 完整ADF-Net
-    print("\n[4/4] 完整ADF-Net预测中...")
+    print("\n[4/6] 完整ADF-Net预测中...")
     full_engine = AblationModelEngine("weights/ADFNet_best.pth", "full")
     full_preds = []
     for i in range(len(X_test)):
@@ -225,6 +225,72 @@ def compare_all_models():
     # ✅ 修改顺序：真实标签在前，预测标签在后
     print_confusion_matrix(y_test, full_preds, label_encoder)
     save_evaluation_results(y_test, full_preds, label_encoder, model_name="ADFNet_Full_test")
+
+    # 5. 特征层拼接模型（双流CNN-A）
+    concat_path = "weights/DualStream_Concat_best.pth"
+    if os.path.exists(concat_path):
+        print("\n[5/6] 特征层拼接模型预测中...")
+        from src.model_engine import DualStream_Concat
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        concat_model = DualStream_Concat(num_classes=8).to(device)
+        concat_model.load_state_dict(torch.load(concat_path, map_location=device))
+        concat_model.eval()
+
+        concat_preds = []
+        for i in range(len(X_test)):
+            time_feat = X_test[i][:120].reshape(1, -1)
+            byte_feat = X_test[i][120:-4].reshape(1, -1)
+            stats_feat = X_test[i][-4:].reshape(1, -1)
+
+            time_tensor = torch.FloatTensor(time_feat).to(device)
+            byte_tensor = torch.FloatTensor(byte_feat).to(device)
+            stats_tensor = torch.FloatTensor(stats_feat).to(device)
+
+            with torch.no_grad():
+                outputs, _ = concat_model(time_tensor, byte_tensor, stats_tensor)
+                pred = torch.argmax(outputs, dim=1).item()
+            concat_preds.append(pred)
+
+        concat_acc = np.sum(np.array(concat_preds) == y_test) / len(y_test)
+        results['双流CNN（特征层拼接）'] = concat_acc
+        print_confusion_matrix(y_test, np.array(concat_preds), label_encoder)
+        save_evaluation_results(y_test, np.array(concat_preds), label_encoder, model_name="DualStream_Concat_test")
+    else:
+        print("\n[5/6] 特征层拼接模型不存在，跳过")
+        results['双流CNN（特征层拼接）'] = None
+
+    # 6. 加权融合模型（双流CNN-B）
+    weighted_path = "weights/DualStream_Weighted_best.pth"
+    if os.path.exists(weighted_path):
+        print("\n[6/6] 加权融合模型预测中...")
+        from src.model_engine import DualStream_Weighted
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        weighted_model = DualStream_Weighted(num_classes=8).to(device)
+        weighted_model.load_state_dict(torch.load(weighted_path, map_location=device))
+        weighted_model.eval()
+
+        weighted_preds = []
+        for i in range(len(X_test)):
+            time_feat = X_test[i][:120].reshape(1, -1)
+            byte_feat = X_test[i][120:-4].reshape(1, -1)
+            stats_feat = X_test[i][-4:].reshape(1, -1)
+
+            time_tensor = torch.FloatTensor(time_feat).to(device)
+            byte_tensor = torch.FloatTensor(byte_feat).to(device)
+            stats_tensor = torch.FloatTensor(stats_feat).to(device)
+
+            with torch.no_grad():
+                outputs, _ = weighted_model(time_tensor, byte_tensor, stats_tensor)
+                pred = torch.argmax(outputs, dim=1).item()
+            weighted_preds.append(pred)
+
+        weighted_acc = np.sum(np.array(weighted_preds) == y_test) / len(y_test)
+        results['双流CNN（加权融合）'] = weighted_acc
+        print_confusion_matrix(y_test, np.array(weighted_preds), label_encoder)
+        save_evaluation_results(y_test, np.array(weighted_preds), label_encoder, model_name="DualStream_Weighted_test")
+    else:
+        print("\n[6/6] 加权融合模型不存在，跳过")
+        results['双流CNN（加权融合）'] = None
 
     # 打印对比结果
     print("\n" + "=" * 60)
